@@ -146,37 +146,31 @@ function familyKey(p){const ids=[p.mother,p.father].filter(id=>id&&people.some(x
 function createsParentCycle(childId,parentId){if(!parentId)return false;const seen=new Set();function walk(id){if(id===childId)return true;if(seen.has(id))return false;seen.add(id);const p=people.find(x=>x.id===id);return !!p&&[p.mother,p.father].filter(Boolean).some(walk)}return walk(parentId)}
 function buildTreeLayout(){
  const gens=generations(),maxGen=Math.max(0,...Object.values(gens)),rows=Array.from({length:maxGen+1},()=>[]);
- // DFS по семейным ветвям: сначала родители, затем все их дети и потомки.
- // Порядок обхода задаёт единый горизонтальный интервал ветви, поэтому
- // добавление родственника перестраивает не только строку, но и потомков.
- const visited=new Set(),ordered=[],familyVisited=new Set();
- const validParents=p=>[p.mother,p.father].filter((id,i,a)=>id&&a.indexOf(id)===i&&people.some(x=>x.id===id));
- const childrenOf=ids=>people.filter(p=>{const ps=validParents(p);return ids.every(id=>ps.includes(id))&&ps.length>0});
- function walkPerson(p){if(!p||visited.has(p.id))return;visited.add(p.id);ordered.push(p);
-   const famKey=validParents(p).sort().join('|')||'root:'+p.id;
-   // Каждую группу детей одной пары обходим единожды.
-   const groups=new Map();
-   people.filter(ch=>validParents(ch).includes(p.id)).forEach(ch=>{const ps=validParents(ch),key=ps.length===2?ps.slice().sort().join('|'):'single:'+p.id;if(!groups.has(key))groups.set(key,[]);groups.get(key).push(ch)});
-   for(const [key,kids] of groups){if(familyVisited.has(key))continue;familyVisited.add(key);kids.sort((a,b)=>people.indexOf(a)-people.indexOf(b)).forEach(walkPerson)}
- }
- const roots=people.filter(p=>validParents(p).length===0).sort((a,b)=>people.indexOf(a)-people.indexOf(b));
- roots.forEach(walkPerson);
- // Отдельно добавляем записи с неполными/циклическими связями, не теряя людей.
- people.forEach(walkPerson);
- ordered.forEach(p=>{const g=Math.max(0,Math.min(maxGen,gens[p.id]||0));rows[g].push(p)});
- // Сиблинги без общих родителей тоже образуют одну соседнюю группу.
- rows.forEach(row=>{
-  // Объединяем в визуальные блоки супругов и сиблингов, чтобы пара всегда стояла рядом.
-  const parent=new Map(row.map(p=>[p.id,p.id]));const find=id=>{let r=id;while(parent.get(r)!==r)r=parent.get(r);while(parent.get(id)!==id){const n=parent.get(id);parent.set(id,r);id=n}return r};const unite=(a,b)=>{if(parent.has(a)&&parent.has(b)){const x=find(a),y=find(b);if(x!==y)parent.set(y,x)}};
-  row.forEach(p=>{(p.siblingOf||[]).forEach(id=>unite(p.id,id));if(p.spouse)unite(p.id,p.spouse)});
-  const groups=new Map();row.forEach(p=>{const k=find(p.id);if(!groups.has(k))groups.set(k,[]);groups.get(k).push(p)});
-  const orderedGroups=[...groups.values()].sort((a,b)=>Math.min(...a.map(x=>ordered.indexOf(x)))-Math.min(...b.map(x=>ordered.indexOf(x))));
-  row.splice(0,row.length,...orderedGroups.flat().sort((a,b)=>{if(a.spouse===b.id)return -1;if(b.spouse===a.id)return 1;return ordered.indexOf(a)-ordered.indexOf(b)}));
+ const cardW=272,cardH=112,gapX=42,rowGap=210,pitch=cardW+gapX,unitGap=54;
+ // Сначала объединяем супругов в одну семейную пару. Пара становится
+ // неделимым узлом раскладки, а не двумя независимыми карточками.
+ const byId=new Map(people.map(p=>[p.id,p])),unitOf=new Map(),units=[];
+ people.forEach(p=>{if(unitOf.has(p.id))return;const mate=p.spouse&&byId.get(p.spouse);const members=mate&&mate.id!==p.id?[p,mate]:[p];
+  members.forEach(x=>unitOf.set(x.id,null));
+  const unit={id:members.map(x=>x.id).sort().join('~'),members,children:[],parents:new Set(),depth:Math.min(...members.map(x=>gens[x.id]||0)),x:0,width:0};
+  units.push(unit);members.forEach(x=>unitOf.set(x.id,unit));
  });
- const cardW=272,cardH=112,gapX=42,rowGap=210,pitch=cardW+gapX,maxCount=Math.max(1,...rows.map(r=>r.length));
- const width=Math.max(900,120+maxCount*pitch),pos={};
- rows.forEach((row,g)=>{row.forEach((p,i)=>{pos[p.id]={x:60+i*pitch+cardW/2,y:100+g*rowGap}})});
- return {gens,maxGen,rows,pos,width,height:190+maxGen*rowGap,rowY:rows.map((_,g)=>100+g*rowGap),cardW,cardH};
+ // Привязываем каждую дочернюю семью к узлу родителей. Если оба родителя
+ // супруги, связь всё равно создаёт только одну ветвь.
+ units.forEach(u=>{u.members.forEach(child=>[child.mother,child.father].filter(Boolean).forEach(id=>{const parentUnit=unitOf.get(id);if(parentUnit&&parentUnit!==u)u.parents.add(parentUnit)}))});
+ units.forEach(u=>{if(u.parents.size){const parent=[...u.parents].sort((a,b)=>a.depth-b.depth)[0];parent.children.push(u)}});
+ units.forEach(u=>u.children.sort((a,b)=>Math.min(...a.members.map(x=>people.indexOf(x)))-Math.min(...b.members.map(x=>people.indexOf(x)))));
+ const visiting=new Set(),measured=new Set();
+ function measure(u){if(measured.has(u))return u.width;if(visiting.has(u))return pitch;visiting.add(u);const own=u.members.length*pitch-gapX;const childWidths=u.children.map(measure);const descendants=childWidths.length?childWidths.reduce((a,b)=>a+b,0)+unitGap*(childWidths.length-1):0;u.width=Math.max(own,descendants);visiting.delete(u);measured.add(u);return u.width}
+ const roots=units.filter(u=>!u.parents.size).sort((a,b)=>Math.min(...a.members.map(x=>people.indexOf(x)))-Math.min(...b.members.map(x=>people.indexOf(x))));
+ units.forEach(measure);let cursor=80;
+ function place(u,left){const childTotal=u.children.reduce((sum,c)=>sum+c.width,0)+unitGap*Math.max(0,u.children.length-1);let childLeft=left+(u.width-childTotal)/2;u.children.forEach(c=>{place(c,childLeft);childLeft+=c.width+unitGap});const own=u.members.length*pitch-gapX;let memberLeft=left+(u.width-own)/2;u.members.sort((a,b)=>{if(a.id===b.spouse)return -1;if(b.id===a.spouse)return 1;return people.indexOf(a)-people.indexOf(b)}).forEach(person=>{const g=Math.max(0,Math.min(maxGen,gens[person.id]||0));const x=memberLeft+cardW/2;const pos={x,y:100+g*rowGap};positions[person.id]=pos;rows[g].push(person);memberLeft+=pitch});}
+ const positions={};roots.forEach(root=>{place(root,cursor);cursor+=root.width+unitGap*2});
+ // Защита от повреждённых циклических/неполных связей: ни одна персона не теряется.
+ units.forEach(u=>u.members.forEach(person=>{if(!positions[person.id]){const g=Math.max(0,Math.min(maxGen,gens[person.id]||0));positions[person.id]={x:cursor+cardW/2,y:100+g*rowGap};rows[g].push(person);cursor+=pitch}}));
+ rows.forEach(row=>row.sort((a,b)=>positions[a.id].x-positions[b.id].x));
+ const width=Math.max(900,cursor+100),height=190+maxGen*rowGap;
+ return {gens,maxGen,rows,pos:positions,width,height,rowY:rows.map((_,g)=>100+g*rowGap),cardW,cardH};
 }
 function relationshipRoutes(pos,gens,cardW,cardH){
  const groups=new Map();
