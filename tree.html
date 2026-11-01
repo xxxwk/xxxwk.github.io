@@ -102,23 +102,40 @@ function savePeople(){try{localStorage.setItem(TREE_KEY,JSON.stringify(people));
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function personLabel(p){return p.name+(p.years?' ('+p.years+')':'')}
 function refreshParentSelects(){['personMother','personFather'].forEach(id=>{const el=document.getElementById(id),old=el.value,gender=id==='personMother'?'female':'male';el.innerHTML='<option value="">'+(id==='personMother'?'Не указана':'Не указан')+'</option>';people.filter(p=>p.id!==editingPersonId&&(!p.gender||p.gender===gender)).forEach(p=>{const o=document.createElement('option');o.value=p.id;o.textContent=personLabel(p);el.appendChild(o)});if([...el.options].some(o=>o.value===old))el.value=old})}
-function generations(){const map={},visiting=new Set();function gen(p){if(map[p.id]!==undefined)return map[p.id];if(visiting.has(p.id))return 0;visiting.add(p.id);const parents=[p.mother,p.father].filter(Boolean).map(id=>people.find(x=>x.id===id)).filter(Boolean);const n=parents.length?Math.max(...parents.map(gen))+1:0;visiting.delete(p.id);map[p.id]=n;return n}people.forEach(gen);return map}
+function generations(){
+ const map={},visiting=new Set();
+ function gen(p){
+  if(map[p.id]!==undefined)return map[p.id];if(visiting.has(p.id))return 0;visiting.add(p.id);
+  const parents=[p.mother,p.father].filter(Boolean).map(id=>people.find(x=>x.id===id)).filter(Boolean);
+  const siblings=(p.siblingOf||[]).map(id=>people.find(x=>x.id===id)).filter(Boolean);
+  const n=parents.length?Math.max(...parents.map(gen))+1:siblings.length?Math.max(...siblings.map(gen)):0;
+  visiting.delete(p.id);map[p.id]=n;return n;
+ }
+ people.forEach(gen);return map;
+}
+function siblingGroupKey(p){
+ const linked=(p.siblingOf||[]).filter(id=>people.some(x=>x.id===id));
+ if(linked.length)return 'siblings:'+[p.id,...linked].sort().join('|');
+ const parents=[p.mother,p.father].filter(Boolean).filter(id=>people.some(x=>x.id===id)).sort();
+ return parents.length?'parents:'+parents.join('|'):'individual:'+p.id;
+}
+function orderedGeneration(row){
+ const groups=new Map();row.forEach((p,i)=>{const key=siblingGroupKey(p);if(!groups.has(key))groups.set(key,[]);groups.get(key).push({p,i})});
+ return [...groups.values()].sort((a,b)=>Math.min(...a.map(x=>x.i))-Math.min(...b.map(x=>x.i))).flatMap(g=>g.sort((a,b)=>a.i-b.i).map(x=>x.p));
+}
 function familyKey(p){const ids=[p.mother,p.father].filter(id=>id&&people.some(x=>x.id===id)).sort();return ids.length?ids.join('|'):'solo:'+p.id}
 function createsParentCycle(childId,parentId){if(!parentId)return false;const seen=new Set();function walk(id){if(id===childId)return true;if(seen.has(id))return false;seen.add(id);const p=people.find(x=>x.id===id);return !!p&&[p.mother,p.father].filter(Boolean).some(walk)}return walk(parentId)}
 function buildTreeLayout(){
  const gens=generations(),maxGen=Math.max(0,...Object.values(gens)),rows=[];
- for(let g=0;g<=maxGen;g++)rows.push(people.filter(p=>gens[p.id]===g));
+ for(let g=0;g<=maxGen;g++)rows.push(orderedGeneration(people.filter(p=>gens[p.id]===g)));
  const pos={},cardW=240,cardH=180,gapX=76,rowGap=260;
- // Place each generation only after the previous generation has coordinates.
- rows[0].sort((a,b)=>people.indexOf(a)-people.indexOf(b));
- for(let g=1;g<=maxGen;g++){
-   rows[g].sort((a,b)=>{
-     const center=p=>{const ids=[p.mother,p.father].filter(id=>id&&pos[id]);return ids.length?ids.reduce((sum,id)=>sum+pos[id].x,0)/ids.length:people.indexOf(p)*100000};
-     return center(a)-center(b)||people.indexOf(a)-people.indexOf(b);
-   });
- }
- const maxCount=Math.max(1,...rows.map(r=>r.length)),width=Math.max(900,100+maxCount*(cardW+gapX));
- rows.forEach((r,g)=>{const total=r.length*(cardW+gapX)-gapX,left=(width-total)/2+cardW/2;r.forEach((person,i)=>pos[person.id]={x:left+i*(cardW+gapX),y:110+g*rowGap})});
+ // Sibling groups and people with the same explicit parents stay together in one generation.
+ const maxCount=Math.max(1,...rows.map(r=>r.length));
+ const width=Math.max(900,100+maxCount*(cardW+gapX));
+ rows.forEach((row,g)=>{
+  const total=row.length*(cardW+gapX)-gapX,left=(width-total)/2+cardW/2;
+  row.forEach((person,i)=>{pos[person.id]={x:left+i*(cardW+gapX),y:110+g*rowGap}});
+ });
  return {gens,maxGen,rows,pos,width,height:220+maxGen*rowGap,rowY:rows.map((_,g)=>110+g*rowGap),cardW,cardH};
 }
 function relationshipRoutes(pos,gens,cardW,cardH){
@@ -165,7 +182,7 @@ document.getElementById('personGender').addEventListener('change',()=>{const m=d
 function resetPersonForm(){editingPersonId=null;document.getElementById('personForm').reset();document.getElementById('personSubmit').textContent='＋ Добавить человека';document.getElementById('cancelPersonEdit').hidden=true;refreshParentSelects()}
 function editPerson(id){const p=people.find(x=>x.id===id);if(!p)return;document.getElementById('treeAddPanel').classList.add('open');editingPersonId=id;document.getElementById('personName').value=p.name;document.getElementById('personYear').value=p.years||'';document.getElementById('personGender').value=p.gender||'';refreshParentSelects();document.getElementById('personMother').value=p.mother||'';document.getElementById('personFather').value=p.father||'';document.getElementById('personSubmit').textContent='Сохранить изменения';document.getElementById('cancelPersonEdit').hidden=false;document.getElementById('personForm').scrollIntoView({behavior:'smooth',block:'center'})}
 function deletePerson(id){if(!confirm('Удалить этого человека из древа? Связи с ним тоже будут удалены.'))return;people=people.filter(p=>p.id!==id);people.forEach(p=>{if(p.mother===id)p.mother='';if(p.father===id)p.father=''});savePeople();if(editingPersonId===id)resetPersonForm();renderTree()}
-document.getElementById('personForm').addEventListener('submit',e=>{e.preventDefault();const name=document.getElementById('personName').value.trim();if(!name)return;const mother=document.getElementById('personMother').value,father=document.getElementById('personFather').value,gender=document.getElementById('personGender').value;if(mother&&mother===father){showToast('Выбери разных родителей или оставь одно поле пустым');return}const childId=editingPersonId||'__new_person__';if((mother&&createsParentCycle(childId,mother))||(father&&createsParentCycle(childId,father))){showToast('Эта связь создаст замкнутую цепочку родства. Проверь выбранных родителей.');return}const p={id:editingPersonId||('p'+Date.now()+Math.random().toString(16).slice(2,6)),name,years:document.getElementById('personYear').value.trim(),gender,mother,father,spouse:(people.find(x=>x.id===editingPersonId)?.spouse)||'',facts:(people.find(x=>x.id===editingPersonId)?.facts)||[],photo:(people.find(x=>x.id===editingPersonId)?.photo)||''};if(mother===p.id||father===p.id){showToast('Человек не может быть собственным родителем');return}if(editingPersonId){const i=people.findIndex(x=>x.id===editingPersonId);if(i>=0)people[i]=p}else {people.push(p);const pending=window.pendingRelation;if(pending){const base=people.find(x=>x.id===pending.id);if(base){if(pending.relation==='mother'){p.gender='female';base.mother=p.id}else if(pending.relation==='father'){p.gender='male';base.father=p.id}else if(pending.relation==='wife'){base.spouse=p.id;p.spouse=base.id}else if(pending.relation==='son'||pending.relation==='daughter'){if(base.gender==='female')p.mother=base.id;else p.father=base.id}else if(pending.relation==='brother'||pending.relation==='sister'){/* Родство по брату/сестре не копирует родителей автоматически: пользователь укажет их явно. */}}window.pendingRelation=null}}savePeople();resetPersonForm();document.getElementById('treeAddPanel').classList.remove('open');renderTree();showToast(editingPersonId?'Изменения сохранены':'Человек добавлен в древо')});
+document.getElementById('personForm').addEventListener('submit',e=>{e.preventDefault();const name=document.getElementById('personName').value.trim();if(!name)return;const mother=document.getElementById('personMother').value,father=document.getElementById('personFather').value,gender=document.getElementById('personGender').value;if(mother&&mother===father){showToast('Выбери разных родителей или оставь одно поле пустым');return}const childId=editingPersonId||'__new_person__';if((mother&&createsParentCycle(childId,mother))||(father&&createsParentCycle(childId,father))){showToast('Эта связь создаст замкнутую цепочку родства. Проверь выбранных родителей.');return}const p={id:editingPersonId||('p'+Date.now()+Math.random().toString(16).slice(2,6)),name,years:document.getElementById('personYear').value.trim(),gender,mother,father,spouse:(people.find(x=>x.id===editingPersonId)?.spouse)||'',facts:(people.find(x=>x.id===editingPersonId)?.facts)||[],photo:(people.find(x=>x.id===editingPersonId)?.photo)||''};if(mother===p.id||father===p.id){showToast('Человек не может быть собственным родителем');return}if(editingPersonId){const i=people.findIndex(x=>x.id===editingPersonId);if(i>=0)people[i]=p}else {people.push(p);const pending=window.pendingRelation;if(pending){const base=people.find(x=>x.id===pending.id);if(base){if(pending.relation==='mother'){p.gender='female';base.mother=p.id}else if(pending.relation==='father'){p.gender='male';base.father=p.id}else if(pending.relation==='wife'){base.spouse=p.id;p.spouse=base.id}else if(pending.relation==='son'||pending.relation==='daughter'){if(base.gender==='female')p.mother=base.id;else p.father=base.id}else if(pending.relation==='brother'||pending.relation==='sister'){p.siblingOf=[base.id];base.siblingOf=[...new Set([...(base.siblingOf||[]),p.id])];}}window.pendingRelation=null}}savePeople();resetPersonForm();document.getElementById('treeAddPanel').classList.remove('open');renderTree();showToast(editingPersonId?'Изменения сохранены':'Человек добавлен в древо')});
 document.getElementById('cancelPersonEdit').addEventListener('click',resetPersonForm);
 document.getElementById('exportTree').addEventListener('click',exportTreePNG);
 document.getElementById('exportBackup').addEventListener('click',()=>{const blob=new Blob([JSON.stringify({title:'Моё семейное древо',people},null,2)],{type:'application/json;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='moe-semeinoe-drevo.json';a.click();URL.revokeObjectURL(url);showToast('Резервная копия скачана')});
