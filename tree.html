@@ -145,56 +145,50 @@ function orderedGeneration(row){
 function familyKey(p){const ids=[p.mother,p.father].filter(id=>id&&people.some(x=>x.id===id)).sort();return ids.length?ids.join('|'):'solo:'+p.id}
 function createsParentCycle(childId,parentId){if(!parentId)return false;const seen=new Set();function walk(id){if(id===childId)return true;if(seen.has(id))return false;seen.add(id);const p=people.find(x=>x.id===id);return !!p&&[p.mother,p.father].filter(Boolean).some(walk)}return walk(parentId)}
 function buildTreeLayout(){
- const gens=generations(),maxGen=Math.max(0,...Object.values(gens)),rows=Array.from({length:maxGen+1},()=>[]);
- const cardW=272,cardH=112,gapX=42,rowGap=210,pitch=cardW+gapX,unitGap=54;
- // Сначала объединяем супругов в одну семейную пару. Пара становится
- // неделимым узлом раскладки, а не двумя независимыми карточками.
- const byId=new Map(people.map(p=>[p.id,p])),unitOf=new Map(),units=[];
- people.forEach(p=>{if(unitOf.has(p.id))return;const mate=p.spouse&&byId.get(p.spouse);const members=mate&&mate.id!==p.id?[p,mate]:[p];
-  members.forEach(x=>unitOf.set(x.id,null));
-  const unit={id:members.map(x=>x.id).sort().join('~'),members,children:[],parents:new Set(),depth:Math.min(...members.map(x=>gens[x.id]||0)),x:0,width:0};
-  units.push(unit);members.forEach(x=>unitOf.set(x.id,unit));
- });
- // Привязываем каждую дочернюю семью к узлу родителей. Если оба родителя
- // супруги, связь всё равно создаёт только одну ветвь.
- units.forEach(u=>{u.members.forEach(child=>[child.mother,child.father].filter(Boolean).forEach(id=>{const parentUnit=unitOf.get(id);if(parentUnit&&parentUnit!==u)u.parents.add(parentUnit)}))});
- units.forEach(u=>{if(u.parents.size){const parent=[...u.parents].sort((a,b)=>a.depth-b.depth)[0];parent.children.push(u)}});
- units.forEach(u=>u.children.sort((a,b)=>Math.min(...a.members.map(x=>people.indexOf(x)))-Math.min(...b.members.map(x=>people.indexOf(x)))));
- const visiting=new Set(),measured=new Set();
- function measure(u){if(measured.has(u))return u.width;if(visiting.has(u))return pitch;visiting.add(u);const own=u.members.length*pitch-gapX;const childWidths=u.children.map(measure);const descendants=childWidths.length?childWidths.reduce((a,b)=>a+b,0)+unitGap*(childWidths.length-1):0;u.width=Math.max(own,descendants);visiting.delete(u);measured.add(u);return u.width}
- const roots=units.filter(u=>!u.parents.size).sort((a,b)=>Math.min(...a.members.map(x=>people.indexOf(x)))-Math.min(...b.members.map(x=>people.indexOf(x))));
- units.forEach(measure);let cursor=80;
- function place(u,left){const childTotal=u.children.reduce((sum,c)=>sum+c.width,0)+unitGap*Math.max(0,u.children.length-1);let childLeft=left+(u.width-childTotal)/2;u.children.forEach(c=>{place(c,childLeft);childLeft+=c.width+unitGap});const own=u.members.length*pitch-gapX;let memberLeft=left+(u.width-own)/2;u.members.sort((a,b)=>{if(a.id===b.spouse)return -1;if(b.id===a.spouse)return 1;return people.indexOf(a)-people.indexOf(b)}).forEach(person=>{const g=Math.max(0,Math.min(maxGen,gens[person.id]||0));const x=memberLeft+cardW/2;const pos={x,y:100+g*rowGap};positions[person.id]=pos;rows[g].push(person);memberLeft+=pitch});}
- const positions={};roots.forEach(root=>{place(root,cursor);cursor+=root.width+unitGap*2});
- // Защита от повреждённых циклических/неполных связей: ни одна персона не теряется.
- units.forEach(u=>u.members.forEach(person=>{if(!positions[person.id]){const g=Math.max(0,Math.min(maxGen,gens[person.id]||0));positions[person.id]={x:cursor+cardW/2,y:100+g*rowGap};rows[g].push(person);cursor+=pitch}}));
- rows.forEach(row=>row.sort((a,b)=>positions[a.id].x-positions[b.id].x));
- const width=Math.max(900,cursor+100),height=190+maxGen*rowGap;
- return {gens,maxGen,rows,pos:positions,width,height,rowY:rows.map((_,g)=>100+g*rowGap),cardW,cardH};
+ const gens=generations(),maxGen=Math.max(0,...Object.values(gens)),byId=new Map(people.map(p=>[p.id,p]));
+ const cardH=112,gapX=34,rowGap=190,unitGap=48,cardWidth=p=>p.photo?272:240;
+ // Объединяем супругов и родителей одного ребёнка в семейные блоки.
+ // Это позволяет двигать весь блок потомков при изменении состава семьи.
+ const parent=new Map(people.map(p=>[p.id,p.id]));
+ function find(x){let r=parent.get(x);if(r===undefined)return null;if(r!==x){r=find(r);parent.set(x,r)}return r}
+ function unite(a,b){if(!byId.has(a)||!byId.has(b))return;const x=find(a),y=find(b);if(x!==y)parent.set(y,x)}
+ people.forEach(p=>{if(p.spouse)unite(p.id,p.spouse);if(p.mother&&p.father)unite(p.mother,p.father)});
+ const unitMap=new Map();people.forEach(p=>{const key=find(p.id);if(!unitMap.has(key))unitMap.set(key,{id:key,members:[],children:[],parents:new Set(),depth:0,width:0});unitMap.get(key).members.push(p)});
+ const units=[...unitMap.values()],unitOf=new Map();units.forEach(u=>u.members.forEach(p=>unitOf.set(p.id,u)));
+ units.forEach(u=>u.members.sort((a,b)=>{const ag=gens[a.id]||0,bg=gens[b.id]||0;return ag-bg||people.indexOf(a)-people.indexOf(b)}));
+ // Реальные родительские ссылки определяют иерархию, а не положение карточек.
+ people.forEach(child=>{const childUnit=unitOf.get(child.id);[child.mother,child.father].filter(Boolean).forEach(id=>{const pu=unitOf.get(id);if(pu&&pu!==childUnit)childUnit.parents.add(pu)})});
+ units.forEach(u=>{if(u.parents.size){const p=[...u.parents].sort((a,b)=>a.members.length-b.members.length)[0];if(!p.children.includes(u))p.children.push(u)}});
+ units.forEach(u=>u.children.sort((a,b)=>Math.min(...a.members.map(p=>people.indexOf(p)))-Math.min(...b.members.map(p=>people.indexOf(p)))));
+ const measured=new Set(),visiting=new Set();
+ function ownWidth(u){return u.members.reduce((sum,p)=>sum+cardWidth(p),0)+gapX*Math.max(0,u.members.length-1)}
+ function measure(u){if(measured.has(u))return u.width;if(visiting.has(u))return ownWidth(u);visiting.add(u);const childWidths=u.children.map(measure),desc=childWidths.reduce((a,b)=>a+b,0)+unitGap*Math.max(0,childWidths.length-1);u.width=Math.max(ownWidth(u),desc,180);visiting.delete(u);measured.add(u);return u.width}
+ units.forEach(measure);
+ const roots=units.filter(u=>!u.parents.size).sort((a,b)=>Math.min(...a.members.map(p=>people.indexOf(p)))-Math.min(...b.members.map(p=>people.indexOf(p))));
+ const pos={},unitCenter=new Map();let cursor=70;
+ function place(u,left,depth,seen=new Set()) {if(seen.has(u))return;seen.add(u);const childTotal=u.children.reduce((n,c)=>n+c.width,0)+unitGap*Math.max(0,u.children.length-1);let childLeft=left+(u.width-childTotal)/2;u.children.forEach(c=>{place(c,childLeft,depth+1,new Set(seen));childLeft+=c.width+unitGap});const own=ownWidth(u);let x=left+(u.width-own)/2;const y=105+depth*rowGap;u.members.forEach(p=>{const w=cardWidth(p);pos[p.id]={x:x+w/2,y,width:w,height:cardH};x+=w+gapX});unitCenter.set(u,(pos[u.members[0].id].x+pos[u.members[u.members.length-1].id].x)/2)}
+ roots.forEach(root=>{place(root,cursor,0);cursor+=root.width+unitGap*2});
+ // Изолированные циклические/неполные записи не теряются.
+ units.forEach(u=>{if(!u.members.some(p=>pos[p.id])){place(u,cursor,0);cursor+=u.width+unitGap*2}});
+ const width=Math.max(900,cursor+70),height=180+Math.max(maxGen,...units.map(u=>{const p=u.members[0];return (gens[p.id]||0)}))*rowGap;
+ return {pos,width,height,gens,cardW:272,cardH,cardWidth};
 }
 function relationshipRoutes(pos,gens,cardW,cardH){
  const groups=new Map();
- people.forEach(child=>{
-  const ids=[child.mother,child.father].filter((id,i,a)=>id&&pos[id]&&a.indexOf(id)===i).sort();
-  if(!ids.length)return;const key=ids.join('|');if(!groups.has(key))groups.set(key,{parents:ids,children:[]});groups.get(key).children.push(child);
- });
+ people.forEach(child=>{const ids=[child.mother,child.father].filter((id,i,a)=>id&&pos[id]&&a.indexOf(id)===i).sort();if(!ids.length)return;const key=ids.join('|');if(!groups.has(key))groups.set(key,{parents:ids,children:[]});groups.get(key).children.push(child)});
  const routes=[];
  for(const group of groups.values()){
   const ps=group.parents.map(id=>pos[id]),cs=group.children.map(p=>pos[p.id]);if(!ps.length||!cs.length)continue;
-  const parentBottom=Math.max(...ps.map(q=>q.y+cardH/2)),childTop=Math.min(...cs.map(q=>q.y-cardH/2));
-  if(childTop<=parentBottom)continue;
-  const busY=parentBottom+(childTop-parentBottom)*.52,childBusY=childTop-10,segments=[];
-  const parentXs=ps.map(q=>q.x),anchor=parentXs.length===2?(Math.min(...parentXs)+Math.max(...parentXs))/2:parentXs[0];
-  ps.forEach(q=>segments.push([[q.x,q.y+cardH/2],[q.x,busY]]));
-  if(ps.length>1)segments.push([[Math.min(...parentXs),busY],[Math.max(...parentXs),busY]]);
-  segments.push([[anchor,busY],[anchor,childBusY]]);
-  const childXs=cs.map(q=>q.x);if(cs.length>1)segments.push([[Math.min(...childXs),childBusY],[Math.max(...childXs),childBusY]]);
-  cs.forEach(q=>segments.push([[q.x,childBusY],[q.x,q.y-cardH/2]]));routes.push({segments});
+  const parentBottom=Math.max(...ps.map(q=>q.y+q.height/2)),childTop=Math.min(...cs.map(q=>q.y-q.height/2));if(childTop<=parentBottom)continue;
+  const busY=parentBottom+Math.max(22,(childTop-parentBottom)*.48),childBusY=childTop-12,segments=[];
+  const xs=ps.map(q=>q.x);const anchor=xs.length===2?(Math.min(...xs)+Math.max(...xs))/2:xs[0];
+  ps.forEach(q=>segments.push([[q.x,q.y+q.height/2],[q.x,busY]]));if(xs.length>1)segments.push([[Math.min(...xs),busY],[Math.max(...xs),busY]]);
+  segments.push([[anchor,busY],[anchor,childBusY]]);const childXs=cs.map(q=>q.x);if(childXs.length>1)segments.push([[Math.min(...childXs),childBusY],[Math.max(...childXs),childBusY]]);cs.forEach(q=>segments.push([[q.x,childBusY],[q.x,q.y-q.height/2]]));routes.push({segments});
  }
  return routes;
 }
 function renderTree(){refreshParentSelects();const canvas=document.getElementById('treeCanvas'),list=document.getElementById('treePeopleList');if(!people.length){canvas.style.height='220px';canvas.style.minWidth='0';canvas.innerHTML='<div class="treeEmpty">Пока древо пустое. Добавь первого человека в форме выше.</div>';list.innerHTML='';return}
- const L=buildTreeLayout(),{pos,width,height,gens,cardW,cardH}=L;canvas.style.minWidth=Math.max(width,document.getElementById('treeCanvasWrap').clientWidth)+'px';canvas.style.height=height+'px';const routes=relationshipRoutes(pos,gens,cardW,cardH);let lines='';routes.forEach((r,i)=>r.segments.forEach(seg=>{lines+=`<path d="M ${seg[0][0]} ${seg[0][1]} L ${seg[1][0]} ${seg[1][1]}" fill="none" stroke="#829477" stroke-width="2.5" stroke-linecap="round"/>`}));people.forEach(p=>{if(p.spouse){const q=people.find(x=>x.id===p.spouse);if(q&&pos[p.id]&&pos[q.id]&&p.id<q.id){const a=pos[p.id],b=pos[q.id],aw=p.photo?136:120,bw=q.photo?136:120;const left=a.x<b.x?a.x+aw:b.x+bw,right=a.x<b.x?b.x-bw:a.x-aw;lines+=`<path d="M ${left} ${a.y} L ${right} ${b.y}" stroke="#a63e32" stroke-width="2" stroke-dasharray="5 5" fill="none"/>`}}});people.forEach(p=>{(p.siblingOf||[]).forEach(id=>{const q=people.find(x=>x.id===id);if(!q||p.id>q.id||!pos[p.id]||!pos[q.id]||gens[p.id]!==gens[q.id])return;const a=pos[p.id],b=pos[q.id],left=Math.min(a.x,b.x)+cardW/2,right=Math.max(a.x,b.x)-cardW/2;if(right>=left)lines+=`<path d="M ${left} ${a.y} L ${right} ${a.y}" stroke="#829477" stroke-width="2.5" stroke-linecap="round" fill="none"/>`})});canvas.innerHTML=`<svg class="treeLines" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" preserveAspectRatio="none" aria-hidden="true" style="width:${width}px;height:${height}px">${lines}</svg>`+people.map(p=>{const q=pos[p.id];return `<div class="treePerson ${p.photo?'hasPhoto':''}" style="left:${q.x-(p.photo?136:120)}px;top:${q.y-cardH/2}px">${p.photo?`<img class="treePhoto" src="${p.photo}" alt="" loading="lazy">`:''}<div class="treePersonText"><strong>${esc(p.name)}</strong><small>${esc(p.years||'Годы жизни не указаны')}</small><div class="treeCardActions"><button type="button" data-open-person="${p.id}">Открыть карточку</button><button type="button" data-edit-person="${p.id}">Редактировать данные</button></div></div></div>`}).join('');list.innerHTML='<strong>Люди в древе</strong>'+people.map(p=>`<div class="treeRow"><span>${esc(personLabel(p))}</span><button type="button" data-delete-person="${p.id}">Удалить</button></div>`).join('');canvas.querySelectorAll('.treePerson').forEach(card=>card.addEventListener('click',e=>{const edit=e.target.closest('[data-edit-person]'),open=e.target.closest('[data-open-person]'),id=(edit||open||card.querySelector('[data-edit-person]'))?.dataset.editPerson||(open?.dataset.openPerson);if(edit){e.stopPropagation();editPerson(edit.dataset.editPerson);return}if(open){e.stopPropagation();openPerson(open.dataset.openPerson);return}if(id)openPerson(id)}));list.querySelectorAll('[data-delete-person]').forEach(b=>b.addEventListener('click',()=>deletePerson(b.dataset.deletePerson)))}
+ const L=buildTreeLayout(),{pos,width,height,gens,cardW,cardH,cardWidth}=L;canvas.style.minWidth=Math.max(width,document.getElementById('treeCanvasWrap').clientWidth)+'px';canvas.style.height=height+'px';const routes=relationshipRoutes(pos,gens,cardW,cardH);let lines='';routes.forEach((r,i)=>r.segments.forEach(seg=>{lines+=`<path d="M ${seg[0][0]} ${seg[0][1]} L ${seg[1][0]} ${seg[1][1]}" fill="none" stroke="#829477" stroke-width="2.5" stroke-linecap="round"/>`}));people.forEach(p=>{if(p.spouse){const q=people.find(x=>x.id===p.spouse);if(q&&pos[p.id]&&pos[q.id]&&p.id<q.id){const a=pos[p.id],b=pos[q.id];const left=(a.x<b.x?a.x+a.width/2:b.x+b.width/2),right=(a.x<b.x?b.x-b.width/2:a.x-a.width/2);if(right>=left)lines+=`<path d="M ${left} ${a.y} L ${right} ${b.y}" stroke="#829477" stroke-width="2.2" fill="none"/>`}}});people.forEach(p=>{(p.siblingOf||[]).forEach(id=>{const q=people.find(x=>x.id===id);if(!q||p.id>q.id||!pos[p.id]||!pos[q.id]||gens[p.id]!==gens[q.id])return;const a=pos[p.id],b=pos[q.id],left=(a.x<b.x?a.x+a.width/2:b.x+b.width/2),right=(a.x<b.x?b.x-b.width/2:a.x-a.width/2);if(right>=left)lines+=`<path d="M ${left} ${a.y} L ${right} ${a.y}" stroke="#829477" stroke-width="2.5" stroke-linecap="round" fill="none"/>`})});canvas.innerHTML=`<svg class="treeLines" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" preserveAspectRatio="none" aria-hidden="true" style="width:${width}px;height:${height}px">${lines}</svg>`+people.map(p=>{const q=pos[p.id];return `<div class="treePerson ${p.photo?'hasPhoto':''}" style="left:${q.x-q.width/2}px;top:${q.y-cardH/2}px">${p.photo?`<img class="treePhoto" src="${p.photo}" alt="" loading="lazy">`:''}<div class="treePersonText"><strong>${esc(p.name)}</strong><small>${esc(p.years||'Годы жизни не указаны')}</small><div class="treeCardActions"><button type="button" data-open-person="${p.id}">Открыть карточку</button><button type="button" data-edit-person="${p.id}">Редактировать данные</button></div></div></div>`}).join('');list.innerHTML='<strong>Люди в древе</strong>'+people.map(p=>`<div class="treeRow"><span>${esc(personLabel(p))}</span><button type="button" data-delete-person="${p.id}">Удалить</button></div>`).join('');canvas.querySelectorAll('.treePerson').forEach(card=>card.addEventListener('click',e=>{const edit=e.target.closest('[data-edit-person]'),open=e.target.closest('[data-open-person]'),id=(edit||open||card.querySelector('[data-edit-person]'))?.dataset.editPerson||(open?.dataset.openPerson);if(edit){e.stopPropagation();editPerson(edit.dataset.editPerson);return}if(open){e.stopPropagation();openPerson(open.dataset.openPerson);return}if(id)openPerson(id)}));list.querySelectorAll('[data-delete-person]').forEach(b=>b.addEventListener('click',()=>deletePerson(b.dataset.deletePerson)))}
 function setGender(value){document.getElementById('personGender').value=value||'';document.querySelectorAll('.genderChoice').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.gender===(value||''))));const m=document.getElementById('personMother').value,f=document.getElementById('personFather').value;refreshParentSelects();if([...document.getElementById('personMother').options].some(o=>o.value===m))document.getElementById('personMother').value=m;if([...document.getElementById('personFather').options].some(o=>o.value===f))document.getElementById('personFather').value=f;}
 document.querySelectorAll('.genderChoice').forEach(b=>b.addEventListener('click',()=>setGender(b.dataset.gender)));
 function resetPersonForm(){editingPersonId=null;document.getElementById('personForm').reset();setGender('');document.getElementById('personSubmit').textContent='＋ Добавить человека';document.getElementById('cancelPersonEdit').hidden=true;refreshParentSelects()}
