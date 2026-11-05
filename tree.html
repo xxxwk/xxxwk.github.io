@@ -129,13 +129,31 @@ function savePeople(){try{localStorage.setItem(TREE_KEY,JSON.stringify(people));
 function setAccountStatus(message){const el=document.getElementById('accountStatus');if(el)el.textContent=message}
 function updateAuthUI(){const logged=!!currentUser;document.getElementById('authFields').hidden=logged;document.getElementById('signedInControls').hidden=!logged;if(logged)setAccountStatus('Вход выполнен: '+currentUser.email)}
 async function syncAfterLogin(user){currentUser=user;cloudReady=false;updateAuthUI();setAccountStatus('Проверяем облачное древо…');try{const {data,error}=await cloudClient.from('family_trees').select('tree').eq('user_id',user.id).maybeSingle();if(error)throw error;const local=people.slice();if(data&&Array.isArray(data.tree)){if(local.length&&JSON.stringify(local)!==JSON.stringify(data.tree)){const choice=confirm('В облаке уже есть древо, а на этом устройстве тоже сохранены данные.\n\nОК — загрузить облачную версию на это устройство.\nОтмена — сохранить текущее древо этого устройства в облако (заменит облачную версию).');if(choice){people=data.tree;localStorage.setItem(TREE_KEY,JSON.stringify(people));renderTree()}else{await uploadTreeToCloud()}}else{people=data.tree;localStorage.setItem(TREE_KEY,JSON.stringify(people));renderTree()}}else if(local.length){if(confirm('В облаке пока нет древа. Загрузить в аккаунт текущее древо с этого устройства?'))await uploadTreeToCloud();else setAccountStatus('Аккаунт подключён. Древо пока хранится только на этом устройстве.')}else{await uploadTreeToCloud()}cloudReady=true;setAccountStatus('Облако подключено ✓')}catch(e){console.error(e);currentUser=null;updateAuthUI();setAccountStatus('Не удалось загрузить данные. Проверь таблицу и политики доступа.')} }
+
+// Защита от частых повторных запросов регистрации: пауза 60 секунд хранится в браузере.
+const SIGNUP_COOLDOWN_KEY='rodelis_signup_cooldown_until';
+let signupCooldownInterval=null;
+function updateSignupCooldown(){
+ const button=document.getElementById('signUpBtn');if(!button)return;
+ const until=Number(localStorage.getItem(SIGNUP_COOLDOWN_KEY)||0),left=Math.max(0,until-Date.now());
+ if(left>0){button.disabled=true;button.setAttribute('aria-live','polite');const seconds=Math.ceil(left/1000);button.textContent='Повторить через 00:'+String(seconds).padStart(2,'0');}
+ else{button.disabled=false;button.textContent='Создать аккаунт';localStorage.removeItem(SIGNUP_COOLDOWN_KEY);if(signupCooldownInterval){clearInterval(signupCooldownInterval);signupCooldownInterval=null;}}
+}
+function startSignupCooldown(){
+ localStorage.setItem(SIGNUP_COOLDOWN_KEY,String(Date.now()+60000));
+ updateSignupCooldown();
+ if(signupCooldownInterval)clearInterval(signupCooldownInterval);
+ signupCooldownInterval=setInterval(updateSignupCooldown,250);
+}
 async function initCloud(){if(!window.supabase?.createClient){setAccountStatus('Не удалось загрузить модуль облака. Проверь интернет.');return}cloudClient=window.supabase.createClient('https://acvujfsshsgwvpharlyi.supabase.co','sb_publishable_St-cOFO8-PeKPlJkBIs-sw_BGbKP8w1');const {data,error}=await cloudClient.auth.getSession();if(error){setAccountStatus('Ошибка проверки входа');return}if(data.session)await syncAfterLogin(data.session.user);else{cloudReady=true;setAccountStatus('Войди или создай аккаунт для облачной синхронизации')}cloudClient.auth.onAuthStateChange((event,session)=>{if(event==='SIGNED_IN'&&session?.user)syncAfterLogin(session.user);if(event==='SIGNED_OUT'){currentUser=null;cloudReady=true;updateAuthUI();setAccountStatus('Вы вышли. Древо осталось в этом браузере.')}})}
 document.getElementById('signInBtn').addEventListener('click',async()=>{const email=document.getElementById('authEmail').value.trim(),password=document.getElementById('authPassword').value;if(!email||!password)return showToast('Введи почту и пароль');const {error}=await cloudClient.auth.signInWithPassword({email,password});if(error){setAccountStatus('Не удалось войти: '+error.message);return}});
 document.getElementById('signUpBtn').addEventListener('click',async()=>{
  const email=document.getElementById('authEmail').value.trim(),password=document.getElementById('authPassword').value;
  if(!email||password.length<6)return showToast('Введи почту и пароль от 6 символов');
  if(!cloudClient)return setAccountStatus('Облачный сервис ещё не подключился. Обнови страницу и попробуй снова.', 'error');
- setAccountStatus('Создаём аккаунт…', 'wait');
+ if(Number(localStorage.getItem(SIGNUP_COOLDOWN_KEY)||0)>Date.now()){updateSignupCooldown();return}
+ startSignupCooldown();
+ setAccountStatus('Создаём аккаунт…');
  try{
   const {data,error}=await cloudClient.auth.signUp({email,password,options:{emailRedirectTo:'https://xxxwk.github.io/tree.html'}});
   if(error){console.error('RODELIS signUp error:',error);const details=[error.message,error.code?'Код: '+error.code:'',error.status?'HTTP: '+error.status:''].filter(Boolean).join(' · ');setAccountStatus('Ошибка регистрации: '+details,'error');return}
@@ -335,7 +353,7 @@ document.getElementById('personSearch').addEventListener('input',e=>{const q=e.t
 
 document.getElementById('clearTree').addEventListener('click',()=>{if(!people.length)return;if(!confirm('Точно очистить всё древо? Перед этим можно скачать резервную копию.'))return;people=[];savePeople();resetPersonForm();renderTree();showToast('Древо очищено')});
 
-loadPeople();renderTree();initCloud();
+loadPeople();renderTree();updateSignupCooldown();if(Number(localStorage.getItem(SIGNUP_COOLDOWN_KEY)||0)>Date.now())signupCooldownInterval=setInterval(updateSignupCooldown,250);initCloud();
 
 </script>
 </body>
