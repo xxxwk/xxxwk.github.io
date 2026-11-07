@@ -122,13 +122,34 @@ const toast=document.getElementById('toast');function showToast(s){toast.textCon
 // Конструктор генеалогического древа: хранение в localStorage и линии к родителям.
 const TREE_KEY='rodoslovnaya.tree.v1';let people=[],editingPersonId=null;
 function loadPeople(){try{people=JSON.parse(localStorage.getItem(TREE_KEY)||'[]');if(!Array.isArray(people))people=[]}catch(e){people=[]}}
-let cloudClient=null,currentUser=null,cloudReady=false,cloudTimer=null;
+let cloudClient=null,currentUser=null,cloudReady=false,cloudTimer=null,syncPromise=null;
+function withTimeout(promise,ms,label){return Promise.race([promise,new Promise((_,reject)=>setTimeout(()=>reject(new Error(label+' — превышено время ожидания ('+Math.round(ms/1000)+' сек.). Проверь интернет, блокировщики и доступ к Supabase.')),ms))])}
 function scheduleCloudSave(){if(!currentUser||!cloudReady)return;clearTimeout(cloudTimer);cloudTimer=setTimeout(uploadTreeToCloud,900)}
 async function uploadTreeToCloud(){if(!currentUser||!cloudReady)return;const snapshot=JSON.stringify(people);try{const {error}=await cloudClient.from('family_trees').upsert({user_id:currentUser.id,tree:JSON.parse(snapshot),updated_at:new Date().toISOString()},{onConflict:'user_id'});if(error)throw error;setAccountStatus('Облако синхронизировано ✓')}catch(e){console.error(e);setAccountStatus('Не удалось синхронизировать. Локальная копия сохранена.');showToast('Ошибка облачного сохранения. Проверь подключение.')}}
 function savePeople(){try{localStorage.setItem(TREE_KEY,JSON.stringify(people));scheduleCloudSave();return true}catch(e){showToast('Не удалось сохранить древо в браузере');return false}}
 function setAccountStatus(message){const el=document.getElementById('accountStatus');if(el)el.textContent=message}
 function updateAuthUI(){const logged=!!currentUser;document.getElementById('authFields').hidden=logged;document.getElementById('signedInControls').hidden=!logged;if(logged)setAccountStatus('Вход выполнен: '+currentUser.email)}
-async function syncAfterLogin(user){currentUser=user;cloudReady=false;updateAuthUI();setAccountStatus('Проверяем облачное древо…');try{const {data,error}=await cloudClient.from('family_trees').select('tree').eq('user_id',user.id).maybeSingle();if(error)throw error;const local=people.slice();if(data&&Array.isArray(data.tree)){if(local.length&&JSON.stringify(local)!==JSON.stringify(data.tree)){const choice=confirm('В облаке уже есть древо, а на этом устройстве тоже сохранены данные.\n\nОК — загрузить облачную версию на это устройство.\nОтмена — сохранить текущее древо этого устройства в облако (заменит облачную версию).');if(choice){people=data.tree;localStorage.setItem(TREE_KEY,JSON.stringify(people));renderTree()}else{await uploadTreeToCloud()}}else{people=data.tree;localStorage.setItem(TREE_KEY,JSON.stringify(people));renderTree()}}else if(local.length){if(confirm('В облаке пока нет древа. Загрузить в аккаунт текущее древо с этого устройства?'))await uploadTreeToCloud();else setAccountStatus('Аккаунт подключён. Древо пока хранится только на этом устройстве.')}else{await uploadTreeToCloud()}cloudReady=true;setAccountStatus('Облако подключено ✓')}catch(e){console.error(e);currentUser=null;updateAuthUI();setAccountStatus('Не удалось загрузить данные. Проверь таблицу и политики доступа.')} }
+async function syncAfterLogin(user){
+ if(syncPromise&&currentUser?.id===user.id)return syncPromise;
+ currentUser=user;cloudReady=false;updateAuthUI();setAccountStatus('Вход выполнен. Проверяем облачное древо…');
+ syncPromise=(async()=>{
+  try{
+   const result=await withTimeout(cloudClient.from('family_trees').select('tree').eq('user_id',user.id).maybeSingle(),18000,'Не удалось получить данные облачного древа');
+   const {data,error}=result;if(error)throw error;
+   const local=people.slice();
+   if(data&&Array.isArray(data.tree)){
+    if(local.length&&JSON.stringify(local)!==JSON.stringify(data.tree)){
+     const choice=confirm('В облаке уже есть древо, а на этом устройстве тоже сохранены данные.\n\nОК — загрузить облачную версию на это устройство.\nОтмена — сохранить текущее древо этого устройства в облако (заменит облачную версию).');
+     if(choice){people=data.tree;localStorage.setItem(TREE_KEY,JSON.stringify(people));renderTree()}else{await withTimeout(uploadTreeToCloud(),18000,'Не удалось сохранить локальное древо в облако')}
+    }else{people=data.tree;localStorage.setItem(TREE_KEY,JSON.stringify(people));renderTree()}
+   }else if(local.length){if(confirm('В облаке пока нет древа. Загрузить в аккаунт текущее древо с этого устройства?'))await withTimeout(uploadTreeToCloud(),18000,'Не удалось загрузить древо в облако');else setAccountStatus('Аккаунт подключён. Древо пока хранится только на этом устройстве.')}
+   else{await withTimeout(uploadTreeToCloud(),18000,'Не удалось создать облачное древо')}
+   cloudReady=true;setAccountStatus('Облако подключено ✓');
+  }catch(e){console.error('RODELIS cloud sync error:',e);cloudReady=false;setAccountStatus('Вход выполнен ('+user.email+'), но облачная синхронизация не завершилась: '+(e?.message||'неизвестная ошибка')+'. Локальное древо сохранено.');}
+  finally{syncPromise=null}
+ })();
+ return syncPromise;
+}
 
 // Защита от частых повторных запросов регистрации: пауза 60 секунд хранится в браузере.
 const SIGNUP_COOLDOWN_KEY='rodelis_signup_cooldown_until';
@@ -161,7 +182,7 @@ function startSignupCooldown(){
  if(signupCooldownInterval)clearInterval(signupCooldownInterval);
  signupCooldownInterval=setInterval(updateSignupCooldown,250);
 }
-async function initCloud(){if(!window.supabase?.createClient){setAccountStatus('Не удалось загрузить модуль облака. Проверь интернет.');return}cloudClient=window.supabase.createClient('https://acvujfsshsgwvpharlyi.supabase.co','sb_publishable_St-cOFO8-PeKPlJkBIs-sw_BGbKP8w1');const {data,error}=await cloudClient.auth.getSession();if(error){setAccountStatus('Ошибка проверки входа');return}if(data.session)await syncAfterLogin(data.session.user);else{cloudReady=true;setAccountStatus('Войди или создай аккаунт для облачной синхронизации')}cloudClient.auth.onAuthStateChange((event,session)=>{if(event==='PASSWORD_RECOVERY'){document.getElementById('authFields').hidden=true;document.getElementById('passwordRecoveryPanel').hidden=false;setAccountStatus('Ссылка подтверждена. Придумай новый пароль.')}if(event==='SIGNED_IN'&&session?.user&&event!=='PASSWORD_RECOVERY')syncAfterLogin(session.user);if(event==='SIGNED_OUT'){currentUser=null;cloudReady=true;document.getElementById('passwordRecoveryPanel').hidden=true;updateAuthUI();setAccountStatus('Вы вышли. Древо осталось в этом браузере.')}})}
+async function initCloud(){if(!window.supabase?.createClient){setAccountStatus('Не удалось загрузить модуль облака. Проверь интернет.');return}cloudClient=window.supabase.createClient('https://acvujfsshsgwvpharlyi.supabase.co','sb_publishable_St-cOFO8-PeKPlJkBIs-sw_BGbKP8w1');const {data,error}=await cloudClient.auth.getSession();if(error){setAccountStatus('Ошибка проверки входа');return}if(data.session)await syncAfterLogin(data.session.user);else{cloudReady=true;setAccountStatus('Войди или создай аккаунт для облачной синхронизации')}cloudClient.auth.onAuthStateChange((event,session)=>{if(event==='PASSWORD_RECOVERY'){document.getElementById('authFields').hidden=true;document.getElementById('passwordRecoveryPanel').hidden=false;setAccountStatus('Ссылка подтверждена. Придумай новый пароль.')}if(event==='SIGNED_IN'&&session?.user&&event!=='PASSWORD_RECOVERY'&&!syncPromise)syncAfterLogin(session.user);if(event==='SIGNED_OUT'){currentUser=null;cloudReady=true;document.getElementById('passwordRecoveryPanel').hidden=true;updateAuthUI();setAccountStatus('Вы вышли. Древо осталось в этом браузере.')}})}
 document.getElementById('signInBtn').addEventListener('click',async()=>{
  const button=document.getElementById('signInBtn');
  const email=document.getElementById('authEmail').value.trim();
@@ -171,10 +192,10 @@ document.getElementById('signInBtn').addEventListener('click',async()=>{
  if(button.disabled)return;
  button.disabled=true;button.textContent='Входим…';setAccountStatus('Проверяем данные аккаунта…');
  try{
-  const {data,error}=await cloudClient.auth.signInWithPassword({email,password});
+  const {data,error}=await withTimeout(cloudClient.auth.signInWithPassword({email,password}),15000,'Сервер авторизации не ответил');
   if(error){console.error('RODELIS signIn error:',error);setAccountStatus('Не удалось войти: '+error.message);return}
-  if(data?.session){setAccountStatus('Вход выполнен. Загружаем семейное древо…')}
-  else{setAccountStatus('Сервис не вернул активную сессию. Попробуй войти ещё раз.')}
+  if(data?.session){button.disabled=false;button.textContent='Войти';setAccountStatus('Данные приняты. Подключаем облачное древо…');await syncAfterLogin(data.session.user)}
+  else{setAccountStatus('Сервис не вернул активную сессию. Проверь подтверждение почты и попробуй ещё раз.')}
  }catch(e){
   console.error('RODELIS signIn exception:',e);
   setAccountStatus('Не удалось выполнить вход: '+(e?.message||'проверь подключение к интернету.'));
@@ -227,16 +248,24 @@ function orderedGeneration(row){
 }
 function familyKey(p){const ids=[p.mother,p.father].filter(id=>id&&people.some(x=>x.id===id)).sort();return ids.length?ids.join('|'):'solo:'+p.id}
 function createsParentCycle(childId,parentId){if(!parentId)return false;const seen=new Set();function walk(id){if(id===childId)return true;if(seen.has(id))return false;seen.add(id);const p=people.find(x=>x.id===id);return !!p&&[p.mother,p.father].filter(Boolean).some(walk)}return walk(parentId)}
-function askWhetherParentsAreSpouses(child){
+function askWhetherParentsAreSpouses(child,newParentId){
  if(!child)return;
  const mother=people.find(x=>x.id===child.mother),father=people.find(x=>x.id===child.father);
  if(!mother||!father)return;
  if(mother.spouse===father.id||father.spouse===mother.id)return;
+ const motherName=mother.name||'Мать',fatherName=father.name||'Отец';
+ const newParent=newParentId===mother.id?mother:newParentId===father.id?father:null;
+ const existingParent=newParent===mother?father:newParent===father?mother:null;
+ const question=newParent&&existingParent
+  ?'Для ребёнка «'+child.name+'» уже указан родитель «'+existingParent.name+'».\n\nДобавляемый второй родитель — «'+newParent.name+'». Являются ли «'+motherName+'» и «'+fatherName+'» супругами?'
+  :'У ребёнка «'+child.name+'» указаны два родителя:\nмать — «'+motherName+'»;\nотец — «'+fatherName+'».\n\nЯвляются ли они супругами?';
  if((mother.spouse&&mother.spouse!==father.id)||(father.spouse&&father.spouse!==mother.id)){
-  showToast('У одного из родителей уже указан другой супруг. Существующая связь сохранена.');return;
+  const conflict=mother.spouse&&mother.spouse!==father.id?people.find(x=>x.id===mother.spouse):people.find(x=>x.id===father.spouse);
+  showToast('Родители добавлены, но у одного из них уже указан другой супруг'+(conflict?' ('+conflict.name+')':'')+'. Существующая супружеская связь не изменена.');
+  return;
  }
- if(confirm('У ребёнка уже указаны мать и отец. Являются ли они супругами?\n\nОК — связать их как супругов.\nОтмена — оставить только родительскую связь.')){
-  mother.spouse=father.id;father.spouse=mother.id;
+ if(confirm(question+'\n\nОК — связать их как супругов.\nОтмена — оставить только родительские связи.')){
+  mother.spouse=father.id;father.spouse=mother.id;savePeople();
  }
 }
 function buildTreeLayout(){
@@ -353,7 +382,7 @@ document.querySelectorAll('.genderChoice').forEach(b=>b.addEventListener('click'
 function resetPersonForm(){editingPersonId=null;document.getElementById('personForm').reset();setGender('');document.getElementById('personSubmit').textContent='＋ Добавить человека';document.getElementById('cancelPersonEdit').hidden=true;refreshParentSelects()}
 function editPerson(id){const p=people.find(x=>x.id===id);if(!p)return;document.getElementById('treeAddPanel').classList.add('open');editingPersonId=id;document.getElementById('personName').value=p.name;document.getElementById('personYear').value=p.years||'';setGender(p.gender||'');refreshParentSelects();document.getElementById('personMother').value=p.mother||'';document.getElementById('personFather').value=p.father||'';document.getElementById('personSubmit').textContent='Сохранить изменения';document.getElementById('cancelPersonEdit').hidden=false;document.getElementById('personForm').scrollIntoView({behavior:'smooth',block:'center'})}
 function deletePerson(id){const target=people.find(p=>p.id===id);if(!target)return;if(!confirm('Вы действительно хотите удалить персону «'+target.name+'»? Это действие нельзя отменить. Персона будет удалена из древа, а связанные с ней линии родства будут изменены. Рекомендуем заранее скачать резервную копию.'))return;people=people.filter(p=>p.id!==id);people.forEach(p=>{if(p.mother===id)p.mother='';if(p.father===id)p.father='';if(p.spouse===id)p.spouse='';if(Array.isArray(p.siblingOf))p.siblingOf=p.siblingOf.filter(x=>x!==id)});savePeople();if(editingPersonId===id)resetPersonForm();document.getElementById('personModal').classList.remove('open');renderTree();showToast('Персона удалена')}
-document.getElementById('personForm').addEventListener('submit',e=>{e.preventDefault();const name=document.getElementById('personName').value.trim();if(!name)return;const mother=document.getElementById('personMother').value,father=document.getElementById('personFather').value,gender=document.getElementById('personGender').value;if(mother&&mother===father){showToast('Выбери разных родителей или оставь одно поле пустым');return}const childId=editingPersonId||'__new_person__';if((mother&&createsParentCycle(childId,mother))||(father&&createsParentCycle(childId,father))){showToast('Эта связь создаст замкнутую цепочку родства. Проверь выбранных родителей.');return}const oldPerson=editingPersonId?people.find(x=>x.id===editingPersonId):null;const parentPairChanged=!oldPerson||oldPerson.mother!==mother||oldPerson.father!==father;const p={id:editingPersonId||('p'+Date.now()+Math.random().toString(16).slice(2,6)),name,years:document.getElementById('personYear').value.trim(),gender,mother,father,spouse:(oldPerson?.spouse)||'',facts:(oldPerson?.facts)||[],photo:(oldPerson?.photo)||''};if(mother===p.id||father===p.id){showToast('Человек не может быть собственным родителем');return}if(editingPersonId){const i=people.findIndex(x=>x.id===editingPersonId);if(i>=0)people[i]=p}else {people.push(p);const pending=window.pendingRelation;if(pending){const base=people.find(x=>x.id===pending.id);if(base){if(pending.relation==='mother'){p.gender='female';base.mother=p.id;askWhetherParentsAreSpouses(base)}else if(pending.relation==='father'){p.gender='male';base.father=p.id;askWhetherParentsAreSpouses(base)}else if(pending.relation==='spouse'||pending.relation==='wife'){if(base.gender==='female')p.gender='male';else if(base.gender==='male')p.gender='female';base.spouse=p.id;p.spouse=base.id}else if(pending.relation==='son'||pending.relation==='daughter'){if(base.gender==='female')p.mother=base.id;else p.father=base.id}else if(pending.relation==='brother'||pending.relation==='sister'){p.siblingOf=[base.id];base.siblingOf=[...new Set([...(base.siblingOf||[]),p.id])];}}window.pendingRelation=null}}if(parentPairChanged)askWhetherParentsAreSpouses(p);savePeople();resetPersonForm();document.getElementById('treeAddPanel').classList.remove('open');renderTree();showToast(editingPersonId?'Изменения сохранены':'Человек добавлен в древо')});
+document.getElementById('personForm').addEventListener('submit',e=>{e.preventDefault();const name=document.getElementById('personName').value.trim();if(!name)return;const mother=document.getElementById('personMother').value,father=document.getElementById('personFather').value,gender=document.getElementById('personGender').value;if(mother&&mother===father){showToast('Выбери разных родителей или оставь одно поле пустым');return}const childId=editingPersonId||'__new_person__';if((mother&&createsParentCycle(childId,mother))||(father&&createsParentCycle(childId,father))){showToast('Эта связь создаст замкнутую цепочку родства. Проверь выбранных родителей.');return}const oldPerson=editingPersonId?people.find(x=>x.id===editingPersonId):null;const parentPairChanged=!oldPerson||oldPerson.mother!==mother||oldPerson.father!==father;const p={id:editingPersonId||('p'+Date.now()+Math.random().toString(16).slice(2,6)),name,years:document.getElementById('personYear').value.trim(),gender,mother,father,spouse:(oldPerson?.spouse)||'',facts:(oldPerson?.facts)||[],photo:(oldPerson?.photo)||''};if(mother===p.id||father===p.id){showToast('Человек не может быть собственным родителем');return}if(editingPersonId){const i=people.findIndex(x=>x.id===editingPersonId);if(i>=0)people[i]=p}else {people.push(p);const pending=window.pendingRelation;if(pending){const base=people.find(x=>x.id===pending.id);if(base){if(pending.relation==='mother'){p.gender='female';base.mother=p.id;askWhetherParentsAreSpouses(base,p.id)}else if(pending.relation==='father'){p.gender='male';base.father=p.id;askWhetherParentsAreSpouses(base,p.id)}else if(pending.relation==='spouse'||pending.relation==='wife'){if(base.gender==='female')p.gender='male';else if(base.gender==='male')p.gender='female';base.spouse=p.id;p.spouse=base.id}else if(pending.relation==='son'||pending.relation==='daughter'){if(base.gender==='female')p.mother=base.id;else p.father=base.id}else if(pending.relation==='brother'||pending.relation==='sister'){p.siblingOf=[base.id];base.siblingOf=[...new Set([...(base.siblingOf||[]),p.id])];}}window.pendingRelation=null}}if(parentPairChanged)askWhetherParentsAreSpouses(p,mother||father||'');savePeople();resetPersonForm();document.getElementById('treeAddPanel').classList.remove('open');renderTree();showToast(editingPersonId?'Изменения сохранены':'Человек добавлен в древо')});
 document.getElementById('cancelPersonEdit').addEventListener('click',resetPersonForm);
 document.getElementById('exportTree').addEventListener('click',exportTreePNG);
 document.getElementById('exportBackup').addEventListener('click',()=>{const blob=new Blob([JSON.stringify({title:'Моё семейное древо',people},null,2)],{type:'application/json;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='moe-semeinoe-drevo.json';a.click();URL.revokeObjectURL(url);showToast('Резервная копия скачана')});
@@ -381,14 +410,14 @@ function attachExistingRelative(base,person,relation){
   base.spouse=person.id;person.spouse=base.id;
  }else if(relation==='mother'){
   if(base.mother&&base.mother!==person.id){showToast('У этой персоны уже указана мать. Сначала измени существующую связь.');return}
-  base.mother=person.id;askWhetherParentsAreSpouses(base);
+  base.mother=person.id;
  }else if(relation==='father'){
   if(base.father&&base.father!==person.id){showToast('У этой персоны уже указан отец. Сначала измени существующую связь.');return}
-  base.father=person.id;askWhetherParentsAreSpouses(base);
+  base.father=person.id;
  }else if(relation==='son'||relation==='daughter'){
   if(base.gender==='female')person.mother=base.id;else if(base.gender==='male')person.father=base.id;
   if(base.spouse){const partner=people.find(x=>x.id===base.spouse);if(partner){if(partner.gender==='female')person.mother=partner.id;else if(partner.gender==='male')person.father=partner.id;}}
-  askWhetherParentsAreSpouses(person);
+  // Parent pair prompt is handled after the relationship has been attached.
  }else if(relation==='brother'||relation==='sister'){
   base.siblingOf=[...new Set([...(base.siblingOf||[]),person.id])];person.siblingOf=[...new Set([...(person.siblingOf||[]),base.id])];
  }
@@ -399,7 +428,7 @@ function openPerson(id){const p=people.find(x=>x.id===id);if(!p)return;const par
  document.getElementById('savePersonFact').onclick=()=>{const v=document.getElementById('newPersonFact').value.trim();if(v){p.facts=p.facts||[];p.facts.push(v);savePeople();openPerson(id);showToast('Факт сохранён')}};
  const photoInput=document.getElementById('personPhotoInput');photoInput.onchange=()=>{const file=photoInput.files&&photoInput.files[0];if(!file)return;if(!file.type.startsWith('image/'))return showToast('Выбери файл изображения');const reader=new FileReader();reader.onerror=()=>showToast('Не удалось прочитать фотографию');reader.onload=()=>{const img=new Image();img.onerror=()=>showToast('Этот файл не удалось открыть как изображение');img.onload=()=>{const max=1000,scale=Math.min(1,max/Math.max(img.width,img.height)),w=Math.max(1,Math.round(img.width*scale)),h=Math.max(1,Math.round(img.height*scale)),c=document.createElement('canvas');c.width=w;c.height=h;const cx=c.getContext('2d');cx.fillStyle='#fff';cx.fillRect(0,0,w,h);cx.drawImage(img,0,0,w,h);let data=c.toDataURL('image/jpeg',.78);if(data.length>650000)data=c.toDataURL('image/jpeg',.58);p.photo=data;if(!savePeople()){p.photo='';return showToast('В памяти браузера недостаточно места. Скачай резервную копию и попробуй другое фото.')}renderTree();openPerson(id);showToast('Фотография добавлена и сохранена')};img.src=reader.result};reader.readAsDataURL(file)};
  document.getElementById('addRelative').onclick=()=>{const choices=document.getElementById('relativeChoices');choices.hidden=!choices.hidden};
- document.querySelectorAll('[data-relation]').forEach(btn=>btn.onclick=()=>{const relation=btn.dataset.relation;const original=people.find(x=>x.id===id);if(!original)return;if(relation==='mother'&&original.mother){showToast('У этой персоны уже указана мать. Сначала измени существующую связь.');return}if(relation==='father'&&original.father){showToast('У этой персоны уже указан отец. Сначала измени существующую связь.');return}const useExisting=confirm('Как добавить родственника?\nОК — найти уже существующую персону в древе.\nОтмена — создать новую персону.');if(useExisting){const candidates=people.filter(x=>x.id!==id);if(!candidates.length){showToast('В древе пока нет других персон');return}const menu=candidates.map((x,i)=>(i+1)+'. '+x.name+(x.years?' ('+x.years+')':'')).join('\n');const answer=prompt('Выбери номер существующей персоны:\n'+menu);const index=Number(answer)-1;const chosen=candidates[index];if(!chosen)return;attachExistingRelative(original,chosen,relation);document.getElementById('personModal').classList.remove('open');renderTree();focusPerson(chosen.id);showToast('Связь добавлена, древо перестроено');return}document.getElementById('personModal').classList.remove('open');document.getElementById('treeAddPanel').classList.add('open');resetPersonForm();const nameInput=document.getElementById('personName');nameInput.focus();
+ document.querySelectorAll('[data-relation]').forEach(btn=>btn.onclick=()=>{const relation=btn.dataset.relation;const original=people.find(x=>x.id===id);if(!original)return;if(relation==='mother'&&original.mother){showToast('У этой персоны уже указана мать. Сначала измени существующую связь.');return}if(relation==='father'&&original.father){showToast('У этой персоны уже указан отец. Сначала измени существующую связь.');return}const useExisting=confirm('Как добавить родственника?\nОК — найти уже существующую персону в древе.\nОтмена — создать новую персону.');if(useExisting){const candidates=people.filter(x=>x.id!==id);if(!candidates.length){showToast('В древе пока нет других персон');return}const menu=candidates.map((x,i)=>(i+1)+'. '+x.name+(x.years?' ('+x.years+')':'')).join('\n');const answer=prompt('Выбери номер существующей персоны:\n'+menu);const index=Number(answer)-1;const chosen=candidates[index];if(!chosen)return;attachExistingRelative(original,chosen,relation);if(relation==='mother'||relation==='father')askWhetherParentsAreSpouses(original,chosen.id);savePeople();document.getElementById('personModal').classList.remove('open');renderTree();focusPerson(chosen.id);showToast('Связь добавлена, древо перестроено');return}document.getElementById('personModal').classList.remove('open');document.getElementById('treeAddPanel').classList.add('open');resetPersonForm();const nameInput=document.getElementById('personName');nameInput.focus();
  if(relation==='mother'){setGender('female');document.getElementById('personMother').value='';document.getElementById('personFather').value='';window.pendingRelation={relation,id}}
  else if(relation==='father'){setGender('male');window.pendingRelation={relation,id}}
  else if(relation==='son'||relation==='daughter'){setGender(relation==='daughter'?'female':'male');if(original.gender==='female')document.getElementById('personMother').value=id;else document.getElementById('personFather').value=id;window.pendingRelation={relation,id}}
