@@ -145,7 +145,7 @@ async function syncAfterLogin(user){
    }else if(local.length){if(confirm('В облаке пока нет древа. Загрузить в аккаунт текущее древо с этого устройства?'))await withTimeout(uploadTreeToCloud(),18000,'Не удалось загрузить древо в облако');else setAccountStatus('Аккаунт подключён. Древо пока хранится только на этом устройстве.')}
    else{await withTimeout(uploadTreeToCloud(),18000,'Не удалось создать облачное древо')}
    cloudReady=true;setAccountStatus('Облако подключено ✓');
-  }catch(e){console.error('RODELIS cloud sync error:',e);cloudReady=false;setAccountStatus('Вход выполнен ('+user.email+'), но облачная синхронизация не завершилась: '+(e?.message||'неизвестная ошибка')+'. Локальное древо сохранено.');}
+  }catch(e){console.error('RODELIS cloud sync error:',e);cloudReady=false;setAccountStatus('Вход выполнен, но не удалось загрузить древо. Оно осталось сохранено на этом устройстве. Попробуй синхронизировать позже.');}
   finally{syncPromise=null}
  })();
  return syncPromise;
@@ -182,7 +182,7 @@ function startSignupCooldown(){
  if(signupCooldownInterval)clearInterval(signupCooldownInterval);
  signupCooldownInterval=setInterval(updateSignupCooldown,250);
 }
-async function initCloud(){if(!window.supabase?.createClient){setAccountStatus('Не удалось загрузить модуль облака. Проверь интернет.');return}cloudClient=window.supabase.createClient('https://acvujfsshsgwvpharlyi.supabase.co','sb_publishable_St-cOFO8-PeKPlJkBIs-sw_BGbKP8w1');const {data,error}=await cloudClient.auth.getSession();if(error){setAccountStatus('Ошибка проверки входа');return}if(data.session)await syncAfterLogin(data.session.user);else{cloudReady=true;setAccountStatus('Войди или создай аккаунт для облачной синхронизации')}cloudClient.auth.onAuthStateChange((event,session)=>{if(event==='PASSWORD_RECOVERY'){document.getElementById('authFields').hidden=true;document.getElementById('passwordRecoveryPanel').hidden=false;setAccountStatus('Ссылка подтверждена. Придумай новый пароль.')}if(event==='SIGNED_IN'&&session?.user&&event!=='PASSWORD_RECOVERY'&&!syncPromise)syncAfterLogin(session.user);if(event==='SIGNED_OUT'){currentUser=null;cloudReady=true;document.getElementById('passwordRecoveryPanel').hidden=true;updateAuthUI();setAccountStatus('Вы вышли. Древо осталось в этом браузере.')}})}
+async function initCloud(){if(!window.supabase?.createClient){setAccountStatus('Не удалось подключиться к сервису входа. Проверь интернет и обнови страницу.');return}cloudClient=window.supabase.createClient('https://acvujfsshsgwvpharlyi.supabase.co','sb_publishable_St-cOFO8-PeKPlJkBIs-sw_BGbKP8w1');const {data,error}=await cloudClient.auth.getSession();if(error){setAccountStatus('Ошибка проверки входа');return}if(data.session)await syncAfterLogin(data.session.user);else{cloudReady=true;setAccountStatus('Войди или создай аккаунт для облачной синхронизации')}cloudClient.auth.onAuthStateChange((event,session)=>{if(event==='PASSWORD_RECOVERY'){document.getElementById('authFields').hidden=true;document.getElementById('passwordRecoveryPanel').hidden=false;setAccountStatus('Ссылка подтверждена. Придумай новый пароль.')}if(event==='SIGNED_IN'&&session?.user&&event!=='PASSWORD_RECOVERY'&&!syncPromise)syncAfterLogin(session.user);if(event==='SIGNED_OUT'){currentUser=null;cloudReady=true;document.getElementById('passwordRecoveryPanel').hidden=true;updateAuthUI();setAccountStatus('Вы вышли. Древо осталось в этом браузере.')}})}
 document.getElementById('signInBtn').addEventListener('click',async()=>{
  const button=document.getElementById('signInBtn');
  const email=document.getElementById('authEmail').value.trim();
@@ -192,13 +192,22 @@ document.getElementById('signInBtn').addEventListener('click',async()=>{
  if(button.disabled)return;
  button.disabled=true;button.textContent='Входим…';setAccountStatus('Проверяем данные аккаунта…');
  try{
-  const {data,error}=await withTimeout(cloudClient.auth.signInWithPassword({email,password}),15000,'Сервер авторизации не ответил');
-  if(error){console.error('RODELIS signIn error:',error);setAccountStatus('Не удалось войти: '+error.message);return}
+  const {data,error}=await withTimeout(cloudClient.auth.signInWithPassword({email,password}),15000,'AUTH_TIMEOUT');
+  if(error){
+   console.error('RODELIS signIn error:',error);
+   const details=String(error.message||'').toLowerCase();
+   if(/invalid login credentials|invalid_credentials/.test(details))setAccountStatus('Неверная электронная почта или пароль. Проверь данные и попробуй ещё раз.');
+   else if(/email not confirmed/.test(details))setAccountStatus('Сначала подтверди электронную почту по ссылке из письма, затем попробуй войти.');
+   else setAccountStatus('Не удалось войти. Проверь введённые данные и попробуй ещё раз немного позже.');
+   return;
+  }
   if(data?.session){button.disabled=false;button.textContent='Войти';setAccountStatus('Данные приняты. Подключаем облачное древо…');await syncAfterLogin(data.session.user)}
   else{setAccountStatus('Сервис не вернул активную сессию. Проверь подтверждение почты и попробуй ещё раз.')}
  }catch(e){
   console.error('RODELIS signIn exception:',e);
-  setAccountStatus('Не удалось выполнить вход: '+(e?.message||'проверь подключение к интернету.'));
+  const timedOut=e?.message==='AUTH_TIMEOUT'||/AUTH_TIMEOUT/.test(String(e?.message||''));
+  if(timedOut)setAccountStatus('Сервер входа не ответил за отведённое время. Проверь подключение к интернету и попробуй войти ещё раз чуть позже.');
+  else setAccountStatus('Не удалось выполнить вход. Проверь подключение к интернету и попробуй ещё раз.');
  }finally{button.disabled=false;button.textContent='Войти'}
 });
 document.getElementById('forgotPasswordBtn').addEventListener('click',async()=>{const email=document.getElementById('authEmail').value.trim();if(!email)return showToast('Сначала введи адрес электронной почты');if(!cloudClient)return setAccountStatus('Облачный сервис ещё не подключился. Обнови страницу и попробуй снова.');const button=document.getElementById('forgotPasswordBtn');button.disabled=true;button.textContent='Отправляем письмо…';try{const {error}=await cloudClient.auth.resetPasswordForEmail(email,{redirectTo:'https://xxxwk.github.io/tree.html'});if(error){setAccountStatus('Не удалось отправить письмо для сброса пароля: '+error.message);return}setAccountStatus('Если для этой почты зарегистрирован аккаунт, на неё придёт письмо со ссылкой для смены пароля. Проверь также папку «Спам».')}catch(e){setAccountStatus('Не удалось отправить письмо. Проверь подключение и попробуй позже.')}finally{button.disabled=false;button.textContent='Забыли пароль?'}});
