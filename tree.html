@@ -116,14 +116,14 @@ html,body{height:100%;overflow:hidden}body.workspacePage{background:#f6eddf;colo
 <div class="drawerFoot">RODELIS <span>Память. Поколения. История.</span></div></aside>
 <div class="personModal" id="personModal" role="dialog" aria-modal="true" aria-labelledby="personModalTitle"><div class="personModalCard"><div style="display:flex;justify-content:space-between;gap:12px;align-items:center"><h2 id="personModalTitle">Персона</h2><button class="mini" type="button" id="closePersonModal">✕ Закрыть</button></div><div id="personModalBody"></div></div></div>
 <div class="toast" id="toast" role="status"></div>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0" onerror="this.onerror=null;this.src='https://unpkg.com/@supabase/supabase-js@2.118.0'"></script>
 <script>
 const toast=document.getElementById('toast');function showToast(s){toast.textContent=s;toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),2400)}
 // Конструктор генеалогического древа: хранение в localStorage и линии к родителям.
 const TREE_KEY='rodoslovnaya.tree.v1';let people=[],editingPersonId=null;
 function loadPeople(){try{people=JSON.parse(localStorage.getItem(TREE_KEY)||'[]');if(!Array.isArray(people))people=[]}catch(e){people=[]}}
 let cloudClient=null,currentUser=null,cloudReady=false,cloudTimer=null,syncPromise=null;
-function withTimeout(promise,ms,label){return Promise.race([promise,new Promise((_,reject)=>setTimeout(()=>reject(new Error(label+' — превышено время ожидания ('+Math.round(ms/1000)+' сек.). Проверь интернет, блокировщики и доступ к Supabase.')),ms))])}
+function withTimeout(promise,ms,label){let timer;const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(label+' — превышено время ожидания ('+Math.round(ms/1000)+' сек.). Проверь интернет, блокировщики и доступ к Supabase.')),ms)});return Promise.race([Promise.resolve(promise),timeout]).finally(()=>clearTimeout(timer))}
 function scheduleCloudSave(){if(!currentUser||!cloudReady)return;clearTimeout(cloudTimer);cloudTimer=setTimeout(uploadTreeToCloud,900)}
 async function uploadTreeToCloud(){if(!currentUser||!cloudReady)return;const snapshot=JSON.stringify(people);try{const {error}=await cloudClient.from('family_trees').upsert({user_id:currentUser.id,tree:JSON.parse(snapshot),updated_at:new Date().toISOString()},{onConflict:'user_id'});if(error)throw error;setAccountStatus('Облако синхронизировано ✓')}catch(e){console.error(e);setAccountStatus('Не удалось синхронизировать. Локальная копия сохранена.');showToast('Ошибка облачного сохранения. Проверь подключение.')}}
 function savePeople(){try{localStorage.setItem(TREE_KEY,JSON.stringify(people));scheduleCloudSave();return true}catch(e){showToast('Не удалось сохранить древо в браузере');return false}}
@@ -182,7 +182,21 @@ function startSignupCooldown(){
  if(signupCooldownInterval)clearInterval(signupCooldownInterval);
  signupCooldownInterval=setInterval(updateSignupCooldown,250);
 }
-async function initCloud(){if(!window.supabase?.createClient){setAccountStatus('Не удалось подключиться к сервису входа. Проверь интернет и обнови страницу.');return}cloudClient=window.supabase.createClient('https://acvujfsshsgwvpharlyi.supabase.co','sb_publishable_St-cOFO8-PeKPlJkBIs-sw_BGbKP8w1');const {data,error}=await cloudClient.auth.getSession();if(error){setAccountStatus('Ошибка проверки входа');return}if(data.session)await syncAfterLogin(data.session.user);else{cloudReady=true;setAccountStatus('Войди или создай аккаунт для облачной синхронизации')}cloudClient.auth.onAuthStateChange((event,session)=>{if(event==='PASSWORD_RECOVERY'){document.getElementById('authFields').hidden=true;document.getElementById('passwordRecoveryPanel').hidden=false;setAccountStatus('Ссылка подтверждена. Придумай новый пароль.')}if(event==='SIGNED_IN'&&session?.user&&event!=='PASSWORD_RECOVERY'&&!syncPromise)syncAfterLogin(session.user);if(event==='SIGNED_OUT'){currentUser=null;cloudReady=true;document.getElementById('passwordRecoveryPanel').hidden=true;updateAuthUI();setAccountStatus('Вы вышли. Древо осталось в этом браузере.')}})}
+async function initCloud(){
+ try{
+  if(!window.supabase?.createClient){setAccountStatus('Не загрузилась библиотека авторизации. Проверь подключение к сети и обнови страницу.');return}
+  cloudClient=window.supabase.createClient('https://acvujfsshsgwvpharlyi.supabase.co','sb_publishable_St-cOFO8-PeKPlJkBIs-sw_BGbKP8w1');
+  cloudClient.auth.onAuthStateChange((event,session)=>{
+   if(event==='PASSWORD_RECOVERY'){document.getElementById('authFields').hidden=true;document.getElementById('passwordRecoveryPanel').hidden=false;setAccountStatus('Ссылка подтверждена. Придумай новый пароль.')}
+   if(event==='SIGNED_IN'&&session?.user&&!syncPromise)syncAfterLogin(session.user);
+   if(event==='SIGNED_OUT'){currentUser=null;cloudReady=true;document.getElementById('passwordRecoveryPanel').hidden=true;updateAuthUI();setAccountStatus('Вы вышли. Древо осталось в этом браузере.')}
+  });
+  const {data,error}=await withTimeout(cloudClient.auth.getSession(),30000,'Не удалось проверить сессию');
+  if(error)throw error;
+  if(data.session)await syncAfterLogin(data.session.user);
+  else{cloudReady=true;setAccountStatus('Войди или создай аккаунт для облачной синхронизации')}
+ }catch(e){console.error('RODELIS initCloud error:',e);cloudReady=false;setAccountStatus('Не удалось подключить облачный аккаунт. Само древо и локальное сохранение доступны. Проверь интернет и обнови страницу.')}
+}
 document.getElementById('signInBtn').addEventListener('click',async()=>{
  const button=document.getElementById('signInBtn');
  const email=document.getElementById('authEmail').value.trim();
@@ -206,7 +220,7 @@ document.getElementById('signInBtn').addEventListener('click',async()=>{
  }catch(e){
   console.error('RODELIS signIn exception:',e);
   const timedOut=e?.message==='AUTH_TIMEOUT'||/AUTH_TIMEOUT/.test(String(e?.message||''));
-  if(timedOut)setAccountStatus('Не удалось завершить вход за отведённое время (до 3 минут). Проверь подключение к интернету и попробуй ещё раз позже.');
+  if(timedOut)setAccountStatus('Сервер не ответил вовремя. Данные для входа не изменены. Проверь подключение к Supabase и попробуй позже.');
   else setAccountStatus('Не удалось выполнить вход. Проверь подключение к интернету и попробуй ещё раз.');
  }finally{button.disabled=false;button.textContent='Войти'}
 });
