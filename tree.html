@@ -134,7 +134,7 @@ async function syncAfterLogin(user){
  currentUser=user;cloudReady=false;updateAuthUI();setAccountStatus('Вход выполнен. Проверяем облачное древо…');
  syncPromise=(async()=>{
   try{
-   const result=await withTimeout(cloudClient.from('family_trees').select('tree').eq('user_id',user.id).maybeSingle(),18000,'Не удалось получить данные облачного древа');
+   const result=await withTimeout(cloudClient.from('family_trees').select('tree').eq('user_id',user.id).maybeSingle(),180000,'Не удалось загрузить семейное древо');
    const {data,error}=result;if(error)throw error;
    const local=people.slice();
    if(data&&Array.isArray(data.tree)){
@@ -190,9 +190,9 @@ document.getElementById('signInBtn').addEventListener('click',async()=>{
  if(!email||!password){setAccountStatus('Введи электронную почту и пароль.');return}
  if(!cloudClient){setAccountStatus('Облачный сервис ещё загружается. Обнови страницу и попробуй снова.');return}
  if(button.disabled)return;
- button.disabled=true;button.textContent='Входим…';setAccountStatus('Проверяем данные аккаунта…');
+ button.disabled=true;button.textContent='Подождите…';setAccountStatus('Выполняем вход. Это может занять до 2–3 минут. Пожалуйста, не закрывай страницу.');
  try{
-  const {data,error}=await withTimeout(cloudClient.auth.signInWithPassword({email,password}),15000,'AUTH_TIMEOUT');
+  const {data,error}=await withTimeout(cloudClient.auth.signInWithPassword({email,password}),180000,'AUTH_TIMEOUT');
   if(error){
    console.error('RODELIS signIn error:',error);
    const details=String(error.message||'').toLowerCase();
@@ -201,12 +201,12 @@ document.getElementById('signInBtn').addEventListener('click',async()=>{
    else setAccountStatus('Не удалось войти. Проверь введённые данные и попробуй ещё раз немного позже.');
    return;
   }
-  if(data?.session){button.disabled=false;button.textContent='Войти';setAccountStatus('Данные приняты. Подключаем облачное древо…');await syncAfterLogin(data.session.user)}
+  if(data?.session){setAccountStatus('Вход выполнен. Загружаем семейное древо. Пожалуйста, подожди ещё немного…');await syncAfterLogin(data.session.user)}
   else{setAccountStatus('Сервис не вернул активную сессию. Проверь подтверждение почты и попробуй ещё раз.')}
  }catch(e){
   console.error('RODELIS signIn exception:',e);
   const timedOut=e?.message==='AUTH_TIMEOUT'||/AUTH_TIMEOUT/.test(String(e?.message||''));
-  if(timedOut)setAccountStatus('Сервер входа не ответил за отведённое время. Проверь подключение к интернету и попробуй войти ещё раз чуть позже.');
+  if(timedOut)setAccountStatus('Не удалось завершить вход за отведённое время (до 3 минут). Проверь подключение к интернету и попробуй ещё раз позже.');
   else setAccountStatus('Не удалось выполнить вход. Проверь подключение к интернету и попробуй ещё раз.');
  }finally{button.disabled=false;button.textContent='Войти'}
 });
